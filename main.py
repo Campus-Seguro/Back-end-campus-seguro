@@ -4,56 +4,139 @@ from pydantic import BaseModel
 from typing import List, Optional
 from uuid import UUID
 
-# Importando os modelos que definimos
-# (Certifique-se de que os modelos estão definidos em um arquivo models.py)
-from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia
+# Importações de Segurança
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
-# --- 1. Configuração do banco de dados ---
+# Importando os modelos e Enums (CORRIGIDO: adicionado TipoPerfil e TipoMidia)
+from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
+
+# --- 1. CONFIGURAÇÃO DO BANCO DE DADOS ---
 sqlite_file_name = "campus_seguro.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 
-# echo=True faz o SQLAchemy imprimir as queries SQL no terminal, útil para debug
-engine = create_engine(sqlite_url, echo=True)
+engine = create_engine(sqlite_url, echo=False) # Mudei para False para o terminal não ficar tão poluído
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
-#Injeção de dependência para pegar a sessão do banco em cada requisição
 def get_session():
     with Session(engine) as session:
         yield session
 
-# --- 2. Inicialização do FastAPI ---
+# --- 2. INICIALIZAÇÃO DO FASTAPI ---
 app = FastAPI(
     title = "API Campus Seguro",
     description = "Backend do MVP para o sistema de segurança do campus universitário",
     version = "0.1.0"
 )
 
-# Cria as tabelas assim que a API iniciar
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
 
-# --- 3. SCHEMAS(DTOs) de Entrada ---
-# O schema define o que a API *espera* receber. É diferente do modelo do banco.
+# Configura o FastAPI para saber que a rota de login se chama "/login"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+
+# --- 3. SCHEMAS (DTOs) DE ENTRADA E SAÍDA ---
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class UsuarioCreate(BaseModel):
+    nome: str
+    email: str
+    senha: str 
+    tipo_perfil: TipoPerfil
+
+class UsuarioResponse(BaseModel):
+    id: UUID
+    nome: str
+    email: str
+    tipo_perfil: TipoPerfil
+
 class OcorrenciaCreate(BaseModel):
-    usuario_id: Optional[UUID] = None  # Pode ser denúncia anônima
+    usuario_id: Optional[UUID] = None
     tipo_incidente: str = "Emergência Geral"
     descricao: str = "Acionamento rápido via botão de emergência."
-    localizacao: str # Ex: "Bloco C, Andar 2" ou "Lat: -23.5505, Lon: -46.6333"
+    localizacao: str
 
-# --- 4. ROTAS (ENDOPOINTS) ---
-@app.post("/ocorrencias/", response_model=Ocorrencia, status_code=201)
-def acionar_botao_emergencia(
-    ocorrencia_in: OcorrenciaCreate,  # <-- O nome da variável aqui
+class OcorrenciaUpdate(BaseModel):
+    status: Optional[StatusOcorrencia] = None
+    responsavel_id: Optional[UUID] = None
+
+class EvidenciaCreate(BaseModel):
+    url_anexo: str  
+    tipo_midia: TipoMidia
+
+class AtualizacaoCreate(BaseModel):
+    autor_id: UUID
+    mensagem_acao: str
+
+
+# --- 4. ROTAS (ENDPOINTS) ---
+
+# --- Autenticação e Usuários ---
+
+@app.post("/login", response_model=Token)
+def login_para_obter_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
     session: Session = Depends(get_session)
 ):
-    """
-    Simula o acionamento do Botão de Emergência.
-    Registra o incidente no banco com baixa latência.
-    """
-    # <-- Deve ser exatamente igual aos nomes usados aqui embaixo
+    """Valida credenciais e devolve um token."""
+    usuario = session.exec(select(Usuario).where(Usuario.email == form_data.username)).first()
+    senha_hasheada = f"hash_falso_{form_data.password}"
+    
+    if not usuario or usuario.senha_hash != senha_hasheada:
+        raise HTTPException(
+            status_code=401, 
+            detail="Email ou senha incorretos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token_simulado = f"fake-jwt-token-{usuario.id}"
+    return {"access_token": token_simulado, "token_type": "bearer"}
+
+
+@app.post("/usuarios/", response_model=UsuarioResponse, status_code=201)
+def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session)):
+    """Cadastra um novo usuário no sistema."""
+    usuario_existente = session.exec(select(Usuario).where(Usuario.email == usuario_in.email)).first()
+    if usuario_existente:
+        raise HTTPException(status_code=400, detail="Email já cadastrado.")
+
+    senha_hasheada = f"hash_falso_{usuario_in.senha}"
+
+    novo_usuario = Usuario(
+        nome=usuario_in.nome,
+        email=usuario_in.email,
+        senha_hash=senha_hasheada,
+        tipo_perfil=usuario_in.tipo_perfil
+    )
+    
+    session.add(novo_usuario)
+    session.commit()
+    session.refresh(novo_usuario)
+    return novo_usuario
+
+
+@app.get("/usuarios/", response_model=List[UsuarioResponse])
+def listar_usuarios(session: Session = Depends(get_session)):
+    """Lista todos os usuários cadastrados."""
+    usuarios = session.exec(select(Usuario)).all()
+    return usuarios
+
+
+# --- Ocorrências (Jornada Principal) ---
+
+@app.post("/ocorrencias/", response_model=Ocorrencia, status_code=201)
+def acionar_botao_emergencia(
+    ocorrencia_in: OcorrenciaCreate,
+    session: Session = Depends(get_session),
+    token: str = Depends(oauth2_scheme)  # <--- É ISSO AQUI QUE TRANCA A PORTA!
+):
+    """Aciona o Botão de Emergência."""
     nova_ocorrencia = Ocorrencia(
         usuario_id=ocorrencia_in.usuario_id,
         tipo_incidente=ocorrencia_in.tipo_incidente,
@@ -61,45 +144,39 @@ def acionar_botao_emergencia(
         localizacao=ocorrencia_in.localizacao,
         status=StatusOcorrencia.ABERTO
     )
-    
     session.add(nova_ocorrencia)
     session.commit()
     session.refresh(nova_ocorrencia)
-    
     return nova_ocorrencia 
+
 
 @app.get("/ocorrencias/", response_model=List[Ocorrencia])
 def listar_ocorrencias(session: Session = Depends(get_session)):
-    """
-    Retorna a lista de todas as ocorrências registradas para o painel de equipe de segurança.
-    """
+    """Painel da Segurança: Lista todas as ocorrências."""
     ocorrencias = session.exec(select(Ocorrencia)).all()
     return ocorrencias
 
-# --- # --- # --- # --- # --- # --- # --- # --- #
 
-# Adicione este schema logo abaixo do OcorrenciaCreate (linha 43 mais ou menos)
-class OcorrenciaUpdate(BaseModel):
-    status: Optional[StatusOcorrencia] = None
-    responsavel_id: Optional[UUID] = None
+@app.get("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia)
+def buscar_ocorrencia_por_id(ocorrencia_id: UUID, session: Session = Depends(get_session)):
+    """Aluno acompanhando status da ocorrência."""
+    ocorrencia = session.get(Ocorrencia, ocorrencia_id)
+    if not ocorrencia:
+        raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
+    return ocorrencia
 
-# Adicione esta rota no final do arquivo, logo após o listar_ocorrencias
+
 @app.patch("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia)
 def atualizar_status_ocorrencia(
     ocorrencia_id: UUID,
     ocorrencia_in: OcorrenciaUpdate,
     session: Session = Depends(get_session)
 ):
-    """
-    Atualiza uma ocorrência existente (Ex: Segurança assumindo o chamado).
-    """
-    # Busca a ocorrência no banco de dados pelo ID
+    """Segurança assumindo o chamado (mudando status)."""
     ocorrencia_db = session.get(Ocorrencia, ocorrencia_id)
-    
     if not ocorrencia_db:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
     
-    # Atualiza apenas os campos que foram enviados
     if ocorrencia_in.status is not None:
         ocorrencia_db.status = ocorrencia_in.status
     if ocorrencia_in.responsavel_id is not None:
@@ -108,5 +185,48 @@ def atualizar_status_ocorrencia(
     session.add(ocorrencia_db)
     session.commit()
     session.refresh(ocorrencia_db)
-    
     return ocorrencia_db
+
+
+@app.post("/ocorrencias/{ocorrencia_id}/evidencias", status_code=201)
+def adicionar_evidencia(
+    ocorrencia_id: UUID,
+    evidencia_in: EvidenciaCreate,
+    session: Session = Depends(get_session)
+):
+    """Aluno anexando mídia."""
+    ocorrencia = session.get(Ocorrencia, ocorrencia_id)
+    if not ocorrencia:
+        raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
+    
+    nova_evidencia = Evidencia(
+        ocorrencia_id=ocorrencia_id,
+        url_anexo=evidencia_in.url_anexo,
+        tipo_midia=evidencia_in.tipo_midia
+    )
+    session.add(nova_evidencia)
+    session.commit()
+    session.refresh(nova_evidencia)
+    return nova_evidencia
+
+
+@app.post("/ocorrencias/{ocorrencia_id}/atualizacoes", status_code=201)
+def adicionar_atualizacao_linha_do_tempo(
+    ocorrencia_id: UUID,
+    atualizacao_in: AtualizacaoCreate,
+    session: Session = Depends(get_session)
+):
+    """Chat / Linha do tempo da ocorrência."""
+    ocorrencia = session.get(Ocorrencia, ocorrencia_id)
+    if not ocorrencia:
+        raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
+        
+    nova_atualizacao = AtualizacaoOcorrencia(
+        ocorrencia_id=ocorrencia_id,
+        autor_id=atualizacao_in.autor_id,
+        mensagem_acao=atualizacao_in.mensagem_acao
+    )
+    session.add(nova_atualizacao)
+    session.commit()
+    session.refresh(nova_atualizacao)
+    return nova_atualizacao
