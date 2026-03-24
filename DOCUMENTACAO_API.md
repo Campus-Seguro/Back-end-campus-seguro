@@ -1,116 +1,178 @@
-# Documentação Técnica e Manual de Execução - MVP Campus Seguro
+# 🛡️ Documentação Técnica e Manual de Execução - Back-end Campus Seguro
 
-Este documento contém todas as instruções necessárias para configurar, executar e testar o back-end do projeto **Campus Seguro**. A API foi desenvolvida em **Python** utilizando o framework **FastAPI** e a biblioteca **SQLModel** (com base de dados SQLite para o MVP).
+Este documento contém todas as instruções necessárias para configurar, executar e testar o back-end do projeto Campus Seguro, bem como o detalhe da arquitetura de dados (Base de Dados) e a listagem de endpoints. A API foi desenvolvida em Python utilizando o framework FastAPI e a biblioteca SQLModel (com base de dados SQLite para o MVP).
 
 ---
 
-## 1. Manual de Configuração (Como executar o projeto)
+## ⚙️ 1. Manual de Configuração (Como executar o projeto)
 
 Para que qualquer membro da equipa consiga correr a API no seu próprio computador, siga estes passos:
 
 ### Pré-requisitos
-1. Ter o **Python 3.8+** instalado no computador.
-2. Ter os ficheiros `main.py` e `models.py` na mesma pasta.
+
+- Ter o Python 3.8+ instalado no computador.
+- Ter os ficheiros `main.py` e `models.py` na mesma pasta.
 
 ### Passo 1: Instalar as dependências
+
 Abra o terminal (ou linha de comandos) na pasta do projeto e execute:
+
 ```bash
 pip install fastapi "uvicorn[standard]" sqlmodel python-multipart
 ```
+
 > Nota: a biblioteca `python-multipart` é necessária para que o formulário de Login do OAuth2 funcione corretamente.
 
 ### Passo 2: Iniciar o Servidor
+
 Na mesma pasta, execute o comando:
+
 ```bash
 uvicorn main:app --reload
 ```
+
 A API estará online! O ficheiro da base de dados `campus_seguro.db` será criado automaticamente na pasta.
 
 ### Passo 3: Aceder à Interface de Testes (Swagger)
+
 Abra o navegador e aceda a:
-- `http://localhost:8000/docs` (Swagger)
-- `http://localhost:8000/redoc` (ReDoc)
+
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
 
 ---
 
-## 2. Guia de Uso: Como testar o Fluxo Completo
+## 💾 2. Modelagem da Base de Dados (Esquema Relacional)
 
-A nossa API possui rotas protegidas por autenticação. Siga este fluxo exato no Swagger para simular a jornada de um utilizador:
+O banco de dados foi desenhado para suportar o controlo de acessos baseado em perfis (RBAC) e garantir a rastreabilidade (auditoria) de todo o ciclo de vida de uma ocorrência.
 
-### 1º Passo: Criar um Utilizador
-1. Vá à rota `POST /usuarios/`.
-2. Clique em **Try it out**.
-3. Preencha o JSON com os dados (ex: email `aluno@teste.com` e senha `123`).
-4. Clique em **Execute**.
+### Diagrama ER (Entity-Relationship)
 
-### 2º Passo: Fazer Login (Gerar o Token / Crachá)
-1. Vá à rota `POST /login` (ou clique no botão verde **Authorize** com o cadeado no topo do ecrã).
-2. No campo `username`, coloque o email do utilizador recém-criado.
-3. No campo `password`, coloque a senha.
-4. Clique em **Authorize** (ou **Execute**).
-5. O sistema reconhecerá o utilizador e todas as rotas com cadeado ficarão destrancadas para si.
+![Diagrama ER - Campus Seguro](diagrama_er.png)
 
-### 3º Passo: Acionar a Emergência
-1. Com o login feito, vá ao `POST /ocorrencias/`.
-2. Altere o campo `localizacao` (ex: "Bloco C") e clique em **Execute**.
-3. Guarde o `id` (UUID) gerado na resposta.
+*Visualização completa do esquema relacional com todas as entidades, atributos e relacionamentos.*
 
-### 4º Passo: Anexar Evidências e Linha do Tempo
-1. Use o `id` da ocorrência guardado para testar a rota `POST /ocorrencias/{ocorrencia_id}/evidencias` (simulando o envio de uma foto).
-2. Teste também `POST /ocorrencias/{ocorrencia_id}/atualizacoes` (simulando uma mensagem no chat com a segurança).
+### 2.1 Tabelas de Controlo de Acesso (RBAC)
+
+**Perfil**: Gere os papéis do sistema (ex: Denunciante, Agente, Administrador).
+- `id` (INT, PK)
+- `nome` (VARCHAR)
+- `descricao` (VARCHAR)
+
+**Permissao**: Ações específicas permitidas dentro do sistema.
+- `id` (INT, PK)
+- `nome` (VARCHAR)
+- `descricao` (VARCHAR)
+
+**Perfil_Permissao**: Tabela associativa (N:M).
+- `perfil_id` (FK → Perfil.id)
+- `permissao_id` (FK → Permissao.id)
+
+**Usuario**: Autenticação e dados dos utilizadores.
+- `id` (UUID, PK)
+- `nome` (VARCHAR)
+- `email` (VARCHAR, UNIQUE)
+- `senha_hash` (VARCHAR)
+- `perfil_id` (INT, FK → Perfil.id)
+- `data_criacao` (TIMESTAMP)
+
+### 2.2 Tabelas de Negócio (Ocorrências)
+
+**Status**: Domínio dos estados de uma ocorrência (ex: Aberto, Em Análise, Resolvido).
+- `id` (INT, PK)
+- `nome` (VARCHAR)
+
+**Ocorrencia** (ou Denuncia): Entidade central de registo de incidentes.
+- `id` (INT, PK)
+- `denunciante_id` (UUID, FK → Usuario.id)
+- `agente_id` (UUID, NULLABLE, FK → Usuario.id)
+- `titulo` (VARCHAR)
+- `descricao` (TEXT)
+- `localizacao` (VARCHAR)
+- `data_hora_incidente` (TIMESTAMP)
+- `prioridade` (VARCHAR)
+- `anonima` (BOOLEAN)
+- `status_id` (INT, FK → Status.id)
+
+**Evidencia**: Ficheiros multimédia (fotos, vídeos) anexados.
+- `id` (INT, PK)
+- `ocorrencia_id` (INT, FK → Ocorrencia.id)
+- `arquivo_url` (VARCHAR)
+- `tipo_arquivo` (VARCHAR)
+- `data_upload` (TIMESTAMP)
+
+**Historico_Auditoria**: Trilha de ações para segurança institucional.
+- `id` (INT, PK)
+- `ocorrencia_id` (INT, FK → Ocorrencia.id)
+- `usuario_acao_id` (UUID, FK → Usuario.id)
+- `acao_realizada` (VARCHAR)
+- `observacao_interna` (TEXT)
+- `data_registro` (TIMESTAMP)
 
 ---
 
-## 3. Modelagem e Estrutura de Base de Dados (`models.py`)
+## 🌐 3. Documentação da API (Endpoints)
 
-O ficheiro `models.py` contém a definição das tabelas da base de dados relacional e as regras de negócio intrínsecas (Enums).
+A API segue os padrões RESTful. Abaixo encontra-se o mapeamento das rotas principais.
 
-### Enums (Domínios de Dados)
-
-- **TipoPerfil**: Define as permissões de sistema (ALUNO, COLABORADOR, SEGURANCA).
-- **StatusOcorrencia**: Controla o ciclo de vida do chamado (ABERTO, EM_ATENDIMENTO, RESOLVIDO).
-- **TipoMidia**: Classifica os anexos de evidências (FOTO, VIDEO, AUDIO).
-
-### Entidades (Tabelas)
-
-- **Usuario**: Armazena os dados de autenticação e perfil de quem usa o sistema. Responsável por garantir quem abre e quem atende os chamados.
-- **Ocorrencia**: Tabela central do sistema. Regista os chamados de emergência. O campo `usuario_id` é opcional (nullable=True), permitindo anonimato no registo.
-- **AtualizacaoOcorrencia**: Garante a trilha de auditoria e a comunicação. Regista cada mudança de estado ou mensagem trocada no chamado.
-- **Evidencia**: Armazena as URLs de mídias (fotos, vídeos) anexadas a uma ocorrência específica.
-
----
-
-## 4. Endpoints Disponíveis (`main.py`)
-
-### Autenticação & Gestão de Utilizadores
+### 🧑‍💻 Autenticação e Gestão de Utilizadores
 
 | Método | Rota | Descrição | Protegida |
 |---|---|---|---|
 | POST | `/login` | Valida email/senha e devolve o Token de acesso (OAuth2) | Não |
-| POST | `/usuarios/` | Regista um novo utilizador no sistema | Não |
-| GET | `/usuarios/` | Lista todos os utilizadores registados | Não |
+| POST | `/usuarios/` | Regista um novo utilizador no sistema (Denunciante ou Agente) | Não |
+| GET | `/usuarios/` | Lista todos os utilizadores registados (Requer perfil Admin) | Sim 🔒 |
 
-### Jornada de Ocorrências (Botão de Emergência)
+#### Exemplo de Payload (POST /usuarios/):
+
+```json
+{
+  "nome": "João Silva",
+  "email": "joao@email.com",
+  "senha": "senha_forte_123",
+  "perfil_id": 1
+}
+```
+
+### 🚨 Jornada de Ocorrências (Botão de Emergência e Relatos)
 
 | Método | Rota | Descrição | Protegida |
 |---|---|---|---|
-| POST | `/ocorrencias/` | Aciona o Botão SOS. Cria o alerta inicial na base de dados | Sim 🔒 |
-| GET | `/ocorrencias/` | Lista todas as ocorrências (Para o Painel da equipa de Segurança) | Não |
-| GET | `/ocorrencias/{id}` | Busca os detalhes de um chamado específico (Acompanhamento) | Não |
-| PATCH | `/ocorrencias/{id}` | Segurança assume o chamado e altera o estado | Não |
+| POST | `/ocorrencias/` | Cria o alerta/denúncia na base de dados (Suporta flag anonima) | Sim 🔒 |
+| GET | `/ocorrencias/` | Lista todas as ocorrências (Filtros: ?status=Aberto, ?prioridade=ALTA) | Sim 🔒 |
+| GET | `/ocorrencias/{id}` | Busca os detalhes de um chamado específico | Sim 🔒 |
+| PATCH | `/ocorrencias/{id}` | Atualiza o estado da ocorrência (ex: Agente assume o chamado) | Sim 🔒 |
 
-### Detalhamento e Linha do Tempo
+#### Exemplo de Payload (POST /ocorrencias/):
+
+```json
+{
+  "denunciante_id": "uuid-do-utilizador",
+  "titulo": "Assédio no Bloco B",
+  "descricao": "Fui abordado de forma inadequada no corredor...",
+  "localizacao": "Bloco B - 2º Andar",
+  "prioridade": "ALTA",
+  "anonima": true
+}
+```
+
+> Nota: Se `anonima` for `true`, a API mascara o `denunciante_id` nas respostas GET para Agentes.
+
+### 📁 Detalhamento e Linha do Tempo
 
 | Método | Rota | Descrição | Protegida |
 |---|---|---|---|
-| POST | `/ocorrencias/{id}/evidencias` | Anexa uma mídia (foto/vídeo) ao chamado existente | Não |
-| POST | `/ocorrencias/{id}/atualizacoes` | Adiciona uma mensagem no chat/linha do tempo do chamado | Não |
+| POST | `/ocorrencias/{id}/evidencias` | Anexa uma multimédia (foto/vídeo) ao chamado existente | Sim 🔒 |
+| POST | `/ocorrencias/{id}/atualizacoes` | Adiciona uma mensagem/ação no histórico de auditoria | Sim 🔒 |
 
 ---
 
-## 5. Observações Técnicas
+## 🛠️ 4. Observações Técnicas e Estrutura
 
-- O projeto usa tokens simulados (`fake-jwt-token-<id>`) e não faz validação JWT de verdade no MVP.
-- As senhas são armazenadas como `hash_falso_<senha>` para fins de MVP.
-- O SQLite cria o arquivo `campus_seguro.db` automaticamente na primeira execução.
-- Para implementação em produção, considere usar hashing de senha seguro (bcrypt) e JWT real.       
+- **models.py**: Contém as definições declarativas das tabelas utilizando o SQLModel. As chaves estrangeiras e os relacionamentos garantem a integridade referencial detalhada na Secção 2.
+
+- **main.py**: Ficheiro principal onde os routers do FastAPI estão configurados, bem como a inicialização do motor SQLite (`campus_seguro.db`).
+
+- **Segurança do MVP**: O projeto atualmente utiliza tokens simulados (`fake-jwt-token-<id>`) para facilitar os testes iniciais de integração com o Front-end. No entanto, as senhas já devem transitar em formato de hash na base de dados por questões de boas práticas.
+
+- **Auditoria Automática**: Qualquer chamada à rota PATCH `/ocorrencias/{id}` deve desencadear automaticamente um INSERT na tabela `Historico_Auditoria` para manter o rastreio exigido pelos requisitos institucionais.       
