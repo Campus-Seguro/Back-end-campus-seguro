@@ -4,17 +4,20 @@ from pydantic import BaseModel
 from typing import List, Optional
 from uuid import UUID
 
+import jwt
+from datetime import datetime, timedelta, timezone
+
 # Importações de Segurança
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
-# Importando os modelos e Enums (CORRIGIDO: adicionado TipoPerfil e TipoMidia)
+# Importando os modelos e Enums
 from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
 
 # --- 1. CONFIGURAÇÃO DO BANCO DE DADOS ---
 sqlite_file_name = "campus_seguro.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 
-engine = create_engine(sqlite_url, echo=False) # Mudei para False para o terminal não ficar tão poluído
+engine = create_engine(sqlite_url, echo=False)
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
@@ -23,11 +26,11 @@ def get_session():
     with Session(engine) as session:
         yield session
 
-# --- 2. INICIALIZAÇÃO DO FASTAPI ---
+# --- 2. INICIALIZAÇÃO DO FASTAPI E SEGURANÇA ---
 app = FastAPI(
     title = "API Campus Seguro",
     description = "Backend do MVP para o sistema de segurança do campus universitário",
-    version = "0.1.0"
+    version = "1.0.0"
 )
 
 @app.on_event("startup")
@@ -36,6 +39,49 @@ def on_startup():
 
 # Configura o FastAPI para saber que a rota de login se chama "/login"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+# Configurações do JWT
+SECRET_KEY = "chave-super-secreta-campus-seguro-mvp"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 24 horas
+
+# --- FUNÇÕES DE SEGURANÇA (JWT E RBAC) ---
+def criar_token_acesso(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def get_usuario_atual(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Não foi possível validar as credenciais",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expirado. Faça login novamente.")
+    except jwt.InvalidTokenError:
+        raise credentials_exception
+    
+    usuario = session.exec(select(Usuario).where(Usuario.email == email)).first()
+    if usuario is None:
+        raise credentials_exception
+    return usuario
+
+def verificar_perfil_seguranca(usuario: Usuario = Depends(get_usuario_atual)):
+    """Trava de RBAC: Garante que apenas Agentes de Segurança acessem a rota."""
+    if usuario.tipo_perfil != TipoPerfil.SEGURANCA:
+        raise HTTPException(
+            status_code=403, 
+            detail="Acesso negado. Esta ação requer perfil de Segurança."
+        )
+    return usuario
 
 
 # --- 3. SCHEMAS (DTOs) DE ENTRADA E SAÍDA ---
@@ -57,7 +103,7 @@ class UsuarioResponse(BaseModel):
     tipo_perfil: TipoPerfil
 
 class OcorrenciaCreate(BaseModel):
-    usuario_id: Optional[UUID] = None
+    anonimo: bool = False 
     tipo_incidente: str = "Emergência Geral"
     descricao: str = "Acionamento rápido via botão de emergência."
     localizacao: str
@@ -71,7 +117,6 @@ class EvidenciaCreate(BaseModel):
     tipo_midia: TipoMidia
 
 class AtualizacaoCreate(BaseModel):
-    autor_id: UUID
     mensagem_acao: str
 
 
@@ -79,12 +124,12 @@ class AtualizacaoCreate(BaseModel):
 
 # --- Autenticação e Usuários ---
 
-@app.post("/login", response_model=Token)
+@app.post("/login", response_model=Token, tags=["Autenticação"])
 def login_para_obter_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     session: Session = Depends(get_session)
 ):
-    """Valida credenciais e devolve um token."""
+    """Valida credenciais e devolve um token JWT real."""
     usuario = session.exec(select(Usuario).where(Usuario.email == form_data.username)).first()
     senha_hasheada = f"hash_falso_{form_data.password}"
     
@@ -95,11 +140,11 @@ def login_para_obter_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    token_simulado = f"fake-jwt-token-{usuario.id}"
-    return {"access_token": token_simulado, "token_type": "bearer"}
+    access_token = criar_token_acesso(data={"sub": usuario.email})
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
-@app.post("/usuarios/", response_model=UsuarioResponse, status_code=201)
+@app.post("/usuarios/", response_model=UsuarioResponse, status_code=201, tags=["Usuários"])
 def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session)):
     """Cadastra um novo usuário no sistema."""
     usuario_existente = session.exec(select(Usuario).where(Usuario.email == usuario_in.email)).first()
@@ -121,7 +166,7 @@ def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_sess
     return novo_usuario
 
 
-@app.get("/usuarios/", response_model=List[UsuarioResponse])
+@app.get("/usuarios/", response_model=List[UsuarioResponse], tags=["Usuários"])
 def listar_usuarios(session: Session = Depends(get_session)):
     """Lista todos os usuários cadastrados."""
     usuarios = session.exec(select(Usuario)).all()
@@ -130,15 +175,17 @@ def listar_usuarios(session: Session = Depends(get_session)):
 
 # --- Ocorrências (Jornada Principal) ---
 
-@app.post("/ocorrencias/", response_model=Ocorrencia, status_code=201)
+@app.post("/ocorrencias/", response_model=Ocorrencia, status_code=201, tags=["Ocorrências"])
 def acionar_botao_emergencia(
     ocorrencia_in: OcorrenciaCreate,
     session: Session = Depends(get_session),
-    token: str = Depends(oauth2_scheme)  # <--- É ISSO AQUI QUE TRANCA A PORTA!
+    usuario_atual: Usuario = Depends(get_usuario_atual)
 ):
-    """Aciona o Botão de Emergência."""
+    """Aciona o Botão de Emergência associado ao usuário logado."""
+    id_para_salvar = None if ocorrencia_in.anonimo else usuario_atual.id
+
     nova_ocorrencia = Ocorrencia(
-        usuario_id=ocorrencia_in.usuario_id,
+        usuario_id=id_para_salvar,
         tipo_incidente=ocorrencia_in.tipo_incidente,
         descricao=ocorrencia_in.descricao,
         localizacao=ocorrencia_in.localizacao,
@@ -150,37 +197,60 @@ def acionar_botao_emergencia(
     return nova_ocorrencia 
 
 
-@app.get("/ocorrencias/", response_model=List[Ocorrencia])
-def listar_ocorrencias(session: Session = Depends(get_session)):
-    """Painel da Segurança: Lista todas as ocorrências."""
-    ocorrencias = session.exec(select(Ocorrencia)).all()
+@app.get("/ocorrencias/", response_model=List[Ocorrencia], tags=["Ocorrências"])
+def listar_ocorrencias(
+    session: Session = Depends(get_session),
+    usuario_atual: Usuario = Depends(get_usuario_atual) 
+):
+    """
+    Inteligência de RBAC:
+    - Se for Segurança: Lista TODAS as ocorrências do campus.
+    - Se for Aluno/Colaborador: Lista APENAS as que ele mesmo criou.
+    """
+    if usuario_atual.tipo_perfil == TipoPerfil.SEGURANCA:
+        ocorrencias = session.exec(select(Ocorrencia)).all()
+    else:
+        ocorrencias = session.exec(select(Ocorrencia).where(Ocorrencia.usuario_id == usuario_atual.id)).all()
+    
     return ocorrencias
 
 
-@app.get("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia)
-def buscar_ocorrencia_por_id(ocorrencia_id: UUID, session: Session = Depends(get_session)):
-    """Aluno acompanhando status da ocorrência."""
+@app.get("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia, tags=["Ocorrências"])
+def buscar_ocorrencia_por_id(
+    ocorrencia_id: UUID, 
+    session: Session = Depends(get_session),
+    usuario_atual: Usuario = Depends(get_usuario_atual)
+):
+    """Aluno acompanhando status da SUA ocorrência (ou Segurança vendo qualquer uma)."""
     ocorrencia = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
+    
+    if usuario_atual.tipo_perfil != TipoPerfil.SEGURANCA and ocorrencia.usuario_id != usuario_atual.id:
+        raise HTTPException(status_code=403, detail="Acesso negado. Esta ocorrência pertence a outro usuário.")
+        
     return ocorrencia
 
 
-@app.patch("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia)
+@app.patch("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia, tags=["Ocorrências"])
 def atualizar_status_ocorrencia(
     ocorrencia_id: UUID,
     ocorrencia_in: OcorrenciaUpdate,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    usuario_seguranca: Usuario = Depends(verificar_perfil_seguranca)
 ):
-    """Segurança assumindo o chamado (mudando status)."""
+    """Exclusivo para Segurança: Assumir o chamado e mudar status."""
     ocorrencia_db = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia_db:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
     
     if ocorrencia_in.status is not None:
         ocorrencia_db.status = ocorrencia_in.status
+    
     if ocorrencia_in.responsavel_id is not None:
         ocorrencia_db.responsavel_id = ocorrencia_in.responsavel_id
+    else:
+        ocorrencia_db.responsavel_id = usuario_seguranca.id
         
     session.add(ocorrencia_db)
     session.commit()
@@ -188,16 +258,20 @@ def atualizar_status_ocorrencia(
     return ocorrencia_db
 
 
-@app.post("/ocorrencias/{ocorrencia_id}/evidencias", status_code=201)
+@app.post("/ocorrencias/{ocorrencia_id}/evidencias", status_code=201, tags=["Detalhes Ocorrência"])
 def adicionar_evidencia(
     ocorrencia_id: UUID,
     evidencia_in: EvidenciaCreate,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    usuario_atual: Usuario = Depends(get_usuario_atual) 
 ):
-    """Aluno anexando mídia."""
+    """Aluno anexando mídia na própria ocorrência."""
     ocorrencia = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
+    
+    if usuario_atual.tipo_perfil != TipoPerfil.SEGURANCA and ocorrencia.usuario_id != usuario_atual.id:
+        raise HTTPException(status_code=403, detail="Acesso negado. Você só pode enviar evidências para as suas próprias ocorrências.")
     
     nova_evidencia = Evidencia(
         ocorrencia_id=ocorrencia_id,
@@ -210,20 +284,24 @@ def adicionar_evidencia(
     return nova_evidencia
 
 
-@app.post("/ocorrencias/{ocorrencia_id}/atualizacoes", status_code=201)
+@app.post("/ocorrencias/{ocorrencia_id}/atualizacoes", status_code=201, tags=["Detalhes Ocorrência"])
 def adicionar_atualizacao_linha_do_tempo(
     ocorrencia_id: UUID,
     atualizacao_in: AtualizacaoCreate,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    usuario_atual: Usuario = Depends(get_usuario_atual) 
 ):
     """Chat / Linha do tempo da ocorrência."""
     ocorrencia = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
         
+    if usuario_atual.tipo_perfil != TipoPerfil.SEGURANCA and ocorrencia.usuario_id != usuario_atual.id:
+        raise HTTPException(status_code=403, detail="Acesso negado. Você só pode interagir com as suas próprias ocorrências.")
+        
     nova_atualizacao = AtualizacaoOcorrencia(
         ocorrencia_id=ocorrencia_id,
-        autor_id=atualizacao_in.autor_id,
+        autor_id=usuario_atual.id, 
         mensagem_acao=atualizacao_in.mensagem_acao
     )
     session.add(nova_atualizacao)
