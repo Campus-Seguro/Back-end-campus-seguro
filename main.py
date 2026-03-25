@@ -1,17 +1,12 @@
+import jwt
+from uuid import UUID
+from typing import List
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends, HTTPException
 from sqlmodel import Session, SQLModel, create_engine, select
-from pydantic import BaseModel
-from typing import List, Optional
-from uuid import UUID
-
-import jwt
-from datetime import datetime, timedelta, timezone
-
-# Importações de Segurança
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-
-# Importando os modelos e Enums
-from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
+from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil
+from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate)
 
 # --- 1. CONFIGURAÇÃO DO BANCO DE DADOS ---
 sqlite_file_name = "campus_seguro.db"
@@ -84,44 +79,6 @@ def verificar_perfil_seguranca(usuario: Usuario = Depends(get_usuario_atual)):
     return usuario
 
 
-# --- 3. SCHEMAS (DTOs) DE ENTRADA E SAÍDA ---
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class UsuarioCreate(BaseModel):
-    nome: str
-    email: str
-    senha: str 
-    tipo_perfil: TipoPerfil
-
-class UsuarioResponse(BaseModel):
-    id: UUID
-    nome: str
-    email: str
-    tipo_perfil: TipoPerfil
-
-class OcorrenciaCreate(BaseModel):
-    anonimo: bool = False 
-    tipo_incidente: str = "Emergência Geral"
-    descricao: str = "Acionamento rápido via botão de emergência."
-    localizacao: str
-
-class OcorrenciaUpdate(BaseModel):
-    status: Optional[StatusOcorrencia] = None
-    responsavel_id: Optional[UUID] = None
-
-class EvidenciaCreate(BaseModel):
-    url_anexo: str  
-    tipo_midia: TipoMidia
-
-class AtualizacaoCreate(BaseModel):
-    mensagem_acao: str
-
-
-# --- 4. ROTAS (ENDPOINTS) ---
-
 # --- Autenticação e Usuários ---
 
 @app.post("/login", response_model=Token, tags=["Autenticação"])
@@ -145,7 +102,7 @@ def login_para_obter_token(
 
 
 @app.post("/usuarios/", response_model=UsuarioResponse, status_code=201, tags=["Usuários"])
-def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session)):
+def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session), usuario_atual: Usuario = Depends(get_usuario_atual)):
     """Cadastra um novo usuário no sistema."""
     usuario_existente = session.exec(select(Usuario).where(Usuario.email == usuario_in.email)).first()
     if usuario_existente:
@@ -167,7 +124,7 @@ def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_sess
 
 
 @app.get("/usuarios/", response_model=List[UsuarioResponse], tags=["Usuários"])
-def listar_usuarios(session: Session = Depends(get_session)):
+def listar_usuarios(session: Session = Depends(get_session), usuario_atual: Usuario = Depends(get_usuario_atual)):
     """Lista todos os usuários cadastrados."""
     usuarios = session.exec(select(Usuario)).all()
     return usuarios
