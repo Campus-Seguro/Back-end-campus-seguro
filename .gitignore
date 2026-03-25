@@ -38,6 +38,7 @@ Desktop.ini
 # ==========================================
 # AMBIENTE, SEGURANÇA E SEGREDOS
 # ==========================================
+campus_seguro.db
 .env
 .env.local
 .env.development.local
