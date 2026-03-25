@@ -1,13 +1,13 @@
-from typing import Optional, List
-from datetime import datetime
-from uuid import UUID, uuid4
-from sqlmodel import Field, SQLModel, Relationship
 from enum import Enum
+from uuid import UUID, uuid4
+from datetime import datetime
+from typing import Optional, List
+from sqlmodel import Field, SQLModel, Relationship
 
 # --- ENUMS ---
 class TipoPerfil(str, Enum):
     ALUNO = "ALUNO"
-    COLABORADOR = "COLABORADOR"
+    ADMINISTRADOR = "ADMINISTRADOR"
     SEGURANCA = "SEGURANCA"
 
 class StatusOcorrencia(str, Enum):
