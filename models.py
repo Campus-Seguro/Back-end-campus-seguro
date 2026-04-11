@@ -26,6 +26,7 @@ class Usuario(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     nome: str
     email: str = Field(unique=True, index=True)
+    cpf: Optional[str] = Field(default=None, unique=True, index=True)
     senha_hash: str
     tipo_perfil: TipoPerfil
 
@@ -77,7 +78,7 @@ class AtualizacaoOcorrencia(SQLModel, table=True):
 class Evidencia(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     ocorrencia_id: UUID = Field(foreign_key="ocorrencia.id")
-    url_anexo: str
+    caminho_salvo: str
     tipo_midia: TipoMidia
 
     # Relacionamento

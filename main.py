@@ -5,8 +5,11 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends, HTTPException
 from sqlmodel import Session, SQLModel, create_engine, select
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil
+from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
 from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate)
+
+from fastapi import File, UploadFile, Form
+from bucket import deletar_arquivo_bucket, fazer_upload_arquivo
 
 # --- 1. CONFIGURAÇÃO DO BANCO DE DADOS ---
 sqlite_file_name = "campus_seguro.db"
@@ -89,6 +92,8 @@ def login_para_obter_token(
     """Valida credenciais e devolve um token JWT real."""
     usuario = session.exec(select(Usuario).where(Usuario.email == form_data.username)).first()
     senha_hasheada = f"hash_falso_{form_data.password}"
+    print(usuario)
+    print(senha_hasheada)
     
     if not usuario or usuario.senha_hash != senha_hasheada:
         raise HTTPException(
@@ -102,7 +107,7 @@ def login_para_obter_token(
 
 
 @app.post("/usuarios/", response_model=UsuarioResponse, status_code=201, tags=["Usuários"])
-def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session), usuario_atual: Usuario = Depends(get_usuario_atual)):
+def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session)):
     """Cadastra um novo usuário no sistema."""
     usuario_existente = session.exec(select(Usuario).where(Usuario.email == usuario_in.email)).first()
     if usuario_existente:
@@ -113,6 +118,7 @@ def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_sess
     novo_usuario = Usuario(
         nome=usuario_in.nome,
         email=usuario_in.email,
+        cpf=usuario_in.cpf,
         senha_hash=senha_hasheada,
         tipo_perfil=usuario_in.tipo_perfil
     )
@@ -218,11 +224,16 @@ def atualizar_status_ocorrencia(
 @app.post("/ocorrencias/{ocorrencia_id}/evidencias", status_code=201, tags=["Detalhes Ocorrência"])
 def adicionar_evidencia(
     ocorrencia_id: UUID,
-    evidencia_in: EvidenciaCreate,
+    # O arquivo físico vem aqui (multipart/form-data)
+    arquivo: UploadFile = File(...), 
+    # Como não podemos usar JSON junto com arquivo, os outros campos vêm como Form
+    tipo_midia: TipoMidia = Form(...), 
     session: Session = Depends(get_session),
     usuario_atual: Usuario = Depends(get_usuario_atual) 
 ):
     """Aluno anexando mídia na própria ocorrência."""
+    
+    # 1. Validações de Segurança (RBAC) - Sem alterações!
     ocorrencia = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
@@ -230,17 +241,37 @@ def adicionar_evidencia(
     if usuario_atual.tipo_perfil != TipoPerfil.SEGURANCA and ocorrencia.usuario_id != usuario_atual.id:
         raise HTTPException(status_code=403, detail="Acesso negado. Você só pode enviar evidências para as suas próprias ocorrências.")
     
-    nova_evidencia = Evidencia(
-        ocorrencia_id=ocorrencia_id,
-        url_anexo=evidencia_in.url_anexo,
-        tipo_midia=evidencia_in.tipo_midia
-    )
-    session.add(nova_evidencia)
-    session.commit()
-    session.refresh(nova_evidencia)
-    return nova_evidencia
+    # 2. Fazer o upload físico para a nuvem
+    try:
+        # Chama a função do seu bucket.py e guarda a Key retornada
+        caminho_salvo = fazer_upload_arquivo(arquivo)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar arquivo na nuvem: {str(e)}")
 
+    # 3. Salvar apenas a referência no Banco de Dados
+    try:
+        # ATENÇÃO: Verifique se no seu models.py o campo é 'url_anexo' ou 'caminho_arquivo'
+        nova_evidencia = Evidencia(
+            ocorrencia_id=ocorrencia_id,
+            url_anexo=caminho_salvo, # Nome que estava no erro do seu log anterior
+            tipo_midia=tipo_midia
+        )
+        
+        session.add(nova_evidencia)
+        session.commit()
+        session.refresh(nova_evidencia)
+        return nova_evidencia
 
+    except Exception as db_error:
+        session.rollback() # Cancela qualquer tentativa no banco
+        deletar_arquivo_bucket(caminho_salvo) # Remove o arquivo do R2
+        
+        # Agora sim, devolve o erro para o usuário
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Erro ao salvar no banco. O arquivo foi removido do storage para manter a integridade. Erro: {str(db_error)}"
+        )
+    
 @app.post("/ocorrencias/{ocorrencia_id}/atualizacoes", status_code=201, tags=["Detalhes Ocorrência"])
 def adicionar_atualizacao_linha_do_tempo(
     ocorrencia_id: UUID,

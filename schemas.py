@@ -10,6 +10,7 @@ class Token(BaseModel):
 class UsuarioCreate(BaseModel):
     nome: str
     email: str
+    cpf: str
     senha: str 
     tipo_perfil: TipoPerfil
 
