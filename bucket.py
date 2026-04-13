@@ -46,26 +46,49 @@ def deletar_arquivo_bucket(key: str):
     except Exception as e:
         print(f"Erro crítico: Não foi possível remover {key} do bucket: {str(e)}")
 
+def obter_tamanho_atual_bucket() -> int:
+    """Soma o peso de todos os arquivos do bucket e retorna em bytes"""
+    tamanho_total = 0
+    # O Paginator lida automaticamente com buckets que têm milhares de arquivos
+    paginator = s3_client.get_paginator('list_objects_v2')
+    
+    for pagina in paginator.paginate(Bucket=BUCKET_NAME):
+        if 'Contents' in pagina:
+            for objeto in pagina['Contents']:
+                tamanho_total += objeto['Size'] # Soma os bytes de cada arquivo
+
+    print(f"Tamanho atual do bucket: {tamanho_total} bytes")                
+    return tamanho_total
+
+
 def fazer_upload_arquivo(arquivo: UploadFile) -> str:
-    """Recebe um arquivo do FastAPI, salva no R2 e retorna a Key"""
+    """Recebe um arquivo, checa o limite de 9GB, salva no R2 e retorna a Key"""
     
-    # 1. Gerar um nome único e seguro para o arquivo
-    # Pegamos a extensão original (ex: .mp4, .jpg)
+    # 1. Trava de Segurança: Calcular o tamanho atual do bucket
+    LIMITE_BYTES = 9 * 1024 * 1024 * 1024 # 9 Gigabytes em Bytes
+    tamanho_atual_bucket = obter_tamanho_atual_bucket()
+    
+    # 2. Descobrir o tamanho do arquivo que o usuário está tentando enviar
+    arquivo.file.seek(0, 2) # Joga o "cursor" de leitura pro final do arquivo
+    tamanho_novo_arquivo = arquivo.file.tell() # Vê em qual byte parou (peso do arquivo)
+    arquivo.file.seek(0) # IMPORTANTE: Volta o cursor para o começo para o upload funcionar
+    
+    # 3. Verifica se a soma do que já tem + o que está chegando passa de 9GB
+    if (tamanho_atual_bucket + tamanho_novo_arquivo) >= LIMITE_BYTES:
+        # Se passar, nós abortamos a operação aqui mesmo, antes de gastar internet enviando
+        raise ValueError("Capacidade máxima do sistema atingida (9GB). Não é possível enviar novos arquivos no momento.")
+
+    # 4. Gerar nome seguro e fazer o upload (Seu código original continua aqui)
     extensao = arquivo.filename.split(".")[-1]
-    
-    # Criamos um nome com UUID para evitar que um arquivo sobrescreva outro com o mesmo nome
     nome_seguro = f"{uuid.uuid4()}.{extensao}" 
 
-    # 2. Fazer o upload para o Cloudflare R2
     s3_client.upload_fileobj(
-        arquivo.file,       # Os dados do arquivo em si
-        BUCKET_NAME,        # O nome do bucket (puxado do .env)
-        nome_seguro,        # O novo nome que criamos
+        arquivo.file,       
+        BUCKET_NAME,        
+        nome_seguro,        
         ExtraArgs={
-            # Diz para o navegador que tipo de arquivo é (importante para vídeos tocarem)
             "ContentType": arquivo.content_type 
         }
     )
 
-    # 3. Retornar a Key gerada para o FastAPI poder salvar no banco de dados
     return nome_seguro

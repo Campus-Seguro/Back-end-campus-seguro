@@ -253,7 +253,7 @@ def adicionar_evidencia(
         # ATENÇÃO: Verifique se no seu models.py o campo é 'url_anexo' ou 'caminho_arquivo'
         nova_evidencia = Evidencia(
             ocorrencia_id=ocorrencia_id,
-            url_anexo=caminho_salvo, # Nome que estava no erro do seu log anterior
+            caminho_salvo=caminho_salvo,
             tipo_midia=tipo_midia
         )
         
