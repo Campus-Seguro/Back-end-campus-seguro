@@ -3,7 +3,7 @@ from uuid import UUID
 from typing import List
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends, HTTPException
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, SQLModel, create_engine, or_, select
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
 from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate)
@@ -89,16 +89,27 @@ def login_para_obter_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     session: Session = Depends(get_session)
 ):
-    """Valida credenciais e devolve um token JWT real."""
-    usuario = session.exec(select(Usuario).where(Usuario.email == form_data.username)).first()
+    """Valida credenciais (Email ou CPF) e devolve um token JWT real."""
+    
+    # O texto que o usuário digitou no front (pode ser o email ou o CPF)
+    identificador = form_data.username 
+    
+    # Busca no banco onde o EMAIL é igual ao texto OU o CPF é igual ao texto
+    usuario = session.exec(
+        select(Usuario).where(
+            or_(
+                Usuario.email == identificador,
+                Usuario.cpf == identificador
+            )
+        )
+    ).first()
+    
     senha_hasheada = f"hash_falso_{form_data.password}"
-    print(usuario)
-    print(senha_hasheada)
     
     if not usuario or usuario.senha_hash != senha_hasheada:
         raise HTTPException(
             status_code=401, 
-            detail="Email ou senha incorretos",
+            detail="Email/CPF ou senha incorretos", # Mensagem clara pro Front
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -108,24 +119,45 @@ def login_para_obter_token(
 
 @app.post("/usuarios/", response_model=UsuarioResponse, status_code=201, tags=["Usuários"])
 def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session)):
-    """Cadastra um novo usuário no sistema."""
-    usuario_existente = session.exec(select(Usuario).where(Usuario.email == usuario_in.email)).first()
-    if usuario_existente:
-        raise HTTPException(status_code=400, detail="Email já cadastrado.")
+    """Cadastra um novo usuário no sistema (Suporta Cadastro Rápido e Completo)."""
+    
+    # 1. Validação de Email (somente se o email foi preenchido)
+    if usuario_in.email:
+        usuario_existente = session.exec(select(Usuario).where(Usuario.email == usuario_in.email)).first()
+        if usuario_existente:
+            raise HTTPException(status_code=400, detail="Email já cadastrado.")
 
-    senha_hasheada = f"hash_falso_{usuario_in.senha}"
+    # 2. Validação de CPF (somente se o CPF foi preenchido)
+    if usuario_in.cpf:
+        cpf_existente = session.exec(select(Usuario).where(Usuario.cpf == usuario_in.cpf)).first()
+        if cpf_existente:
+            raise HTTPException(status_code=400, detail="CPF já cadastrado.")
 
+    # 3. Lógica do Cadastro Rápido vs Completo
+    # Consideramos completo apenas se ele mandou email E senha E cpf
+    flag_completo = bool(usuario_in.email and usuario_in.senha and usuario_in.cpf)
+
+    # 4. Hash da senha condicional (só hasheia se ele mandou senha)
+    senha_hasheada = f"hash_falso_{usuario_in.senha}" if usuario_in.senha else None
+
+    # se for passado o cpf e email é pq o cadastro é completo
+
+    # 5. Criar o objeto Usuario
     novo_usuario = Usuario(
         nome=usuario_in.nome,
+        data_nascimento=usuario_in.data_nascimento,
         email=usuario_in.email,
+        genero=usuario_in.genero,
         cpf=usuario_in.cpf,
         senha_hash=senha_hasheada,
-        tipo_perfil=usuario_in.tipo_perfil
+        tipo_perfil=usuario_in.tipo_perfil,
+        cadastro_completo=flag_completo # Salva a flag dinamicamente
     )
     
     session.add(novo_usuario)
     session.commit()
     session.refresh(novo_usuario)
+    
     return novo_usuario
 
 

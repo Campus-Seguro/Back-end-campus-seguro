@@ -1,6 +1,6 @@
 from enum import Enum
 from uuid import UUID, uuid4
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 from sqlmodel import Field, SQLModel, Relationship
 
@@ -24,11 +24,21 @@ class TipoMidia(str, Enum):
 
 class Usuario(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    # --- CAMPOS PARA O CADASTRO RÁPIDO ---
     nome: str
-    email: str = Field(unique=True, index=True)
+    data_nascimento: Optional[date] = None 
+    
+    
+    # --- CAMPOS PARA O CADASTRO completo ---
+    email: Optional[str] = Field(default=None, unique=True, index=True)
+    senha_hash: Optional[str] = None
+    
+    tipo_perfil: TipoPerfil = Field(default=TipoPerfil.ALUNO)
+    
+    genero: Optional[str] = None
     cpf: Optional[str] = Field(default=None, unique=True, index=True)
-    senha_hash: str
-    tipo_perfil: TipoPerfil
+    # Se o cadastro for completo ou não (para permitir que o usuário finalize depois, se quiser)
+    cadastro_completo: bool = Field(default=False)
 
     # Relacionamentos
     ocorrencias_registradas: List["Ocorrencia"] = Relationship(
