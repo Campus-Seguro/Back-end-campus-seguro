@@ -1,7 +1,9 @@
-boto3==1.42.83
-botocore==1.42.83
-fastapi==0.136.0
-pydantic==2.13.3
-PyJWT==2.12.1
-python-dotenv==1.2.2
-sqlmodel==0.0.38
+boto3
+botocore
+fastapi
+pydantic[email]
+PyJWT
+python-dotenv
+sqlmodel
+uvicorn
+multipart
