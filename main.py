@@ -233,7 +233,7 @@ def analisar_relato_com_ia(req: RelatoRequest):
         resposta = requests.post(
             url=url_destino,
             json={"descricao": req.descricao},
-            timeout=60 # Importante: Limite de 60 segundos para a IA não travar seu backend
+            timeout=120 # Importante: Limite de 120 segundos para a IA não travar seu backend
         )
         
         resposta.raise_for_status()
