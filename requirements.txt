@@ -8,3 +8,4 @@ sqlmodel
 uvicorn
 multipart
 requests
+python-multipart
