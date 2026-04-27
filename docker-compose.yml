@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  api_principal:
+    build: .
+    container_name: campus_seguro_principal
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app # Mantém o seu campus_seguro.db a salvo no seu notebook
+    env_file:
+      - .env
