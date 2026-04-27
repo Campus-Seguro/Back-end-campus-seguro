@@ -1,15 +1,20 @@
+import os
+
 import jwt
 from uuid import UUID
 from typing import List
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends, HTTPException
+import requests
 from sqlmodel import Session, SQLModel, create_engine, or_, select
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
-from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate)
+from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate, RelatoRequest)
 
 from fastapi import File, UploadFile, Form
 from bucket import deletar_arquivo_bucket, fazer_upload_arquivo
+
+URL_LLAMA_API = os.getenv("URL_LLAMA_API")
 
 # --- 1. CONFIGURAÇÃO DO BANCO DE DADOS ---
 sqlite_file_name = "campus_seguro.db"
@@ -208,6 +213,43 @@ def listar_ocorrencias(
         ocorrencias = session.exec(select(Ocorrencia).where(Ocorrencia.usuario_id == usuario_atual.id)).all()
     
     return ocorrencias
+
+@app.post("/ocorrencias/ia/preview", tags=["Inteligência Artificial"])
+def analisar_relato_com_ia(req: RelatoRequest):
+    """
+    Recebe um texto do Frontend e envia para o microserviço do Llama 
+    para extrair os dados da denúncia.
+    """
+    
+    if not URL_LLAMA_API:
+        raise HTTPException(
+            status_code=500, 
+            detail="A variável URL_LLAMA_API não está configurada no servidor."
+        )
+        
+    url_destino = f"{URL_LLAMA_API}/denuncias/preview"
+    
+    try:
+        resposta = requests.post(
+            url=url_destino,
+            json={"descricao": req.descricao},
+            timeout=60 # Importante: Limite de 60 segundos para a IA não travar seu backend
+        )
+        
+        resposta.raise_for_status()
+        
+        return resposta.json()
+        
+    except requests.exceptions.Timeout:
+        raise HTTPException(
+            status_code=504, # 504 Gateway Timeout
+            detail="A API de IA demorou muito para responder."
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=502, # 502 Bad Gateway (Erro ao conectar com outro servidor)
+            detail=f"Falha de comunicação com o serviço de IA: {str(e)}"
+        )
 
 
 @app.get("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia, tags=["Ocorrências"])

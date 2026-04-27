@@ -53,6 +53,9 @@ class Ocorrencia(SQLModel, table=True):
     
     # FK para Usuario (Opcional para garantir anonimato)
     usuario_id: Optional[UUID] = Field(default=None, foreign_key="usuario.id")
+
+    descricao_resumida: str
+    horario_ocorrencia: datetime
     
     tipo_incidente: str
     descricao: str

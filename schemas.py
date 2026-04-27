@@ -62,6 +62,9 @@ class OcorrenciaCreate(BaseModel):
     descricao: str = "Acionamento rápido via botão de emergência."
     localizacao: str
 
+class RelatoRequest(BaseModel):
+    descricao: str
+
 class OcorrenciaUpdate(BaseModel):
     status: Optional[StatusOcorrencia] = None
     responsavel_id: Optional[UUID] = None
