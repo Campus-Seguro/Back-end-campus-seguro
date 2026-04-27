@@ -7,3 +7,4 @@ python-dotenv
 sqlmodel
 uvicorn
 multipart
+requests
