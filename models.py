@@ -53,9 +53,6 @@ class Ocorrencia(SQLModel, table=True):
     
     # FK para Usuario (Opcional para garantir anonimato)
     usuario_id: Optional[UUID] = Field(default=None, foreign_key="usuario.id")
-
-    descricao_resumida: str
-    horario_ocorrencia: datetime
     
     tipo_incidente: str
     descricao: str
@@ -65,6 +62,9 @@ class Ocorrencia(SQLModel, table=True):
     
     # FK para o perfil de Segurança responsável pelo atendimento
     responsavel_id: Optional[UUID] = Field(default=None, foreign_key="usuario.id")
+
+    # --- CAMPO NOVO: Resultado da IA ---
+    analise_ia: Optional[str] = Field(default=None)
 
     # Relacionamentos
     autor: Optional[Usuario] = Relationship(

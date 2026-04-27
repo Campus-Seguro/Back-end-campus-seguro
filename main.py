@@ -1,20 +1,16 @@
-import os
-
 import jwt
+import httpx
 from uuid import UUID
 from typing import List
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Depends, HTTPException
-import requests
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from sqlmodel import Session, SQLModel, create_engine, or_, select
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
-from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate, RelatoRequest)
+from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate)
 
 from fastapi import File, UploadFile, Form
 from bucket import deletar_arquivo_bucket, fazer_upload_arquivo
-
-URL_LLAMA_API = os.getenv("URL_LLAMA_API")
 
 # --- 1. CONFIGURAÇÃO DO BANCO DE DADOS ---
 sqlite_file_name = "campus_seguro.db"
@@ -40,7 +36,6 @@ app = FastAPI(
 def on_startup():
     create_db_and_tables()
 
-# Configura o FastAPI para saber que a rota de login se chama "/login"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # Configurações do JWT
@@ -87,6 +82,44 @@ def verificar_perfil_seguranca(usuario: Usuario = Depends(get_usuario_atual)):
     return usuario
 
 
+# --- INTEGRAÇÃO COM IA (OLLAMA) ---
+async def processar_analise_ia(ocorrencia_id: UUID, descricao: str, tipo_incidente: str):
+    """
+    Roda em background: Envia os dados para o Ollama local e atualiza a ocorrência no banco.
+    """
+    # Prompt otimizado para o Phi-3: exigindo um formato rígido e sem enrolação
+    prompt = (
+        "Você é um sistema de IA de segurança universitária. "
+        "Sua tarefa é analisar o relato abaixo, classificar o risco e sugerir uma ação. "
+        "Seja direto, não use introduções ou saudações. "
+        "Responda EXATAMENTE neste formato:\n"
+        "RISCO: [Baixo, Médio ou Alto]\n"
+        "AÇÃO: [Sua recomendação em apenas uma frase curta]\n\n"
+        f"Tipo de Incidente: {tipo_incidente}\n"
+        f"Relato da Vítima/Testemunha: {descricao}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resposta = await client.post("http://localhost:11434/api/generate", json={
+                "model": "phi3", # <-- Alterado para o Phi-3
+                "prompt": prompt,
+                "stream": False
+            })
+            resposta.raise_for_status()
+            resultado_ia = resposta.json().get("response", "").strip()
+
+        with Session(engine) as session:
+            ocorrencia = session.get(Ocorrencia, ocorrencia_id)
+            if ocorrencia:
+                ocorrencia.analise_ia = resultado_ia
+                session.add(ocorrencia)
+                session.commit()
+
+    except Exception as e:
+        print(f"Erro ao processar IA (Phi-3) para ocorrência {ocorrencia_id}: {e}")
+
+
 # --- Autenticação e Usuários ---
 
 @app.post("/login", response_model=Token, tags=["Autenticação"])
@@ -94,12 +127,8 @@ def login_para_obter_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     session: Session = Depends(get_session)
 ):
-    """Valida credenciais (Email ou CPF) e devolve um token JWT real."""
-    
-    # O texto que o usuário digitou no front (pode ser o email ou o CPF)
     identificador = form_data.username 
     
-    # Busca no banco onde o EMAIL é igual ao texto OU o CPF é igual ao texto
     usuario = session.exec(
         select(Usuario).where(
             or_(
@@ -114,7 +143,7 @@ def login_para_obter_token(
     if not usuario or usuario.senha_hash != senha_hasheada:
         raise HTTPException(
             status_code=401, 
-            detail="Email/CPF ou senha incorretos", # Mensagem clara pro Front
+            detail="Email/CPF ou senha incorretos",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -124,30 +153,19 @@ def login_para_obter_token(
 
 @app.post("/usuarios/", response_model=UsuarioResponse, status_code=201, tags=["Usuários"])
 def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_session)):
-    """Cadastra um novo usuário no sistema (Suporta Cadastro Rápido e Completo)."""
-    
-    # 1. Validação de Email (somente se o email foi preenchido)
     if usuario_in.email:
         usuario_existente = session.exec(select(Usuario).where(Usuario.email == usuario_in.email)).first()
         if usuario_existente:
             raise HTTPException(status_code=400, detail="Email já cadastrado.")
 
-    # 2. Validação de CPF (somente se o CPF foi preenchido)
     if usuario_in.cpf:
         cpf_existente = session.exec(select(Usuario).where(Usuario.cpf == usuario_in.cpf)).first()
         if cpf_existente:
             raise HTTPException(status_code=400, detail="CPF já cadastrado.")
 
-    # 3. Lógica do Cadastro Rápido vs Completo
-    # Consideramos completo apenas se ele mandou email E senha E cpf
     flag_completo = bool(usuario_in.email and usuario_in.senha and usuario_in.cpf)
-
-    # 4. Hash da senha condicional (só hasheia se ele mandou senha)
     senha_hasheada = f"hash_falso_{usuario_in.senha}" if usuario_in.senha else None
 
-    # se for passado o cpf e email é pq o cadastro é completo
-
-    # 5. Criar o objeto Usuario
     novo_usuario = Usuario(
         nome=usuario_in.nome,
         data_nascimento=usuario_in.data_nascimento,
@@ -156,7 +174,7 @@ def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_sess
         cpf=usuario_in.cpf,
         senha_hash=senha_hasheada,
         tipo_perfil=usuario_in.tipo_perfil,
-        cadastro_completo=flag_completo # Salva a flag dinamicamente
+        cadastro_completo=flag_completo
     )
     
     session.add(novo_usuario)
@@ -168,7 +186,6 @@ def criar_usuario(usuario_in: UsuarioCreate, session: Session = Depends(get_sess
 
 @app.get("/usuarios/", response_model=List[UsuarioResponse], tags=["Usuários"])
 def listar_usuarios(session: Session = Depends(get_session), usuario_atual: Usuario = Depends(get_usuario_atual)):
-    """Lista todos os usuários cadastrados."""
     usuarios = session.exec(select(Usuario)).all()
     return usuarios
 
@@ -178,10 +195,11 @@ def listar_usuarios(session: Session = Depends(get_session), usuario_atual: Usua
 @app.post("/ocorrencias/", response_model=Ocorrencia, status_code=201, tags=["Ocorrências"])
 def acionar_botao_emergencia(
     ocorrencia_in: OcorrenciaCreate,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     usuario_atual: Usuario = Depends(get_usuario_atual)
 ):
-    """Aciona o Botão de Emergência associado ao usuário logado."""
+    """Aciona o Botão de Emergência e enfileira a análise da IA."""
     id_para_salvar = None if ocorrencia_in.anonimo else usuario_atual.id
 
     nova_ocorrencia = Ocorrencia(
@@ -194,6 +212,16 @@ def acionar_botao_emergencia(
     session.add(nova_ocorrencia)
     session.commit()
     session.refresh(nova_ocorrencia)
+
+    # Dispara a análise no Ollama sem bloquear a resposta do botão de emergência
+    if nova_ocorrencia.descricao:
+        background_tasks.add_task(
+            processar_analise_ia, 
+            nova_ocorrencia.id, 
+            nova_ocorrencia.descricao,
+            nova_ocorrencia.tipo_incidente
+        )
+
     return nova_ocorrencia 
 
 
@@ -202,54 +230,12 @@ def listar_ocorrencias(
     session: Session = Depends(get_session),
     usuario_atual: Usuario = Depends(get_usuario_atual) 
 ):
-    """
-    Inteligência de RBAC:
-    - Se for Segurança: Lista TODAS as ocorrências do campus.
-    - Se for Aluno/Colaborador: Lista APENAS as que ele mesmo criou.
-    """
     if usuario_atual.tipo_perfil == TipoPerfil.SEGURANCA:
         ocorrencias = session.exec(select(Ocorrencia)).all()
     else:
         ocorrencias = session.exec(select(Ocorrencia).where(Ocorrencia.usuario_id == usuario_atual.id)).all()
     
     return ocorrencias
-
-@app.post("/ocorrencias/ia/preview", tags=["Inteligência Artificial"])
-def analisar_relato_com_ia(req: RelatoRequest):
-    """
-    Recebe um texto do Frontend e envia para o microserviço do Llama 
-    para extrair os dados da denúncia.
-    """
-    
-    if not URL_LLAMA_API:
-        raise HTTPException(
-            status_code=500, 
-            detail="A variável URL_LLAMA_API não está configurada no servidor."
-        )
-        
-    url_destino = f"{URL_LLAMA_API}/denuncias/preview"
-    
-    try:
-        resposta = requests.post(
-            url=url_destino,
-            json={"descricao": req.descricao},
-            timeout=60 # Importante: Limite de 60 segundos para a IA não travar seu backend
-        )
-        
-        resposta.raise_for_status()
-        
-        return resposta.json()
-        
-    except requests.exceptions.Timeout:
-        raise HTTPException(
-            status_code=504, # 504 Gateway Timeout
-            detail="A API de IA demorou muito para responder."
-        )
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(
-            status_code=502, # 502 Bad Gateway (Erro ao conectar com outro servidor)
-            detail=f"Falha de comunicação com o serviço de IA: {str(e)}"
-        )
 
 
 @app.get("/ocorrencias/{ocorrencia_id}", response_model=Ocorrencia, tags=["Ocorrências"])
@@ -258,7 +244,6 @@ def buscar_ocorrencia_por_id(
     session: Session = Depends(get_session),
     usuario_atual: Usuario = Depends(get_usuario_atual)
 ):
-    """Aluno acompanhando status da SUA ocorrência (ou Segurança vendo qualquer uma)."""
     ocorrencia = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
@@ -276,7 +261,6 @@ def atualizar_status_ocorrencia(
     session: Session = Depends(get_session),
     usuario_seguranca: Usuario = Depends(verificar_perfil_seguranca)
 ):
-    """Exclusivo para Segurança: Assumir o chamado e mudar status."""
     ocorrencia_db = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia_db:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
@@ -298,16 +282,11 @@ def atualizar_status_ocorrencia(
 @app.post("/ocorrencias/{ocorrencia_id}/evidencias", status_code=201, tags=["Detalhes Ocorrência"])
 def adicionar_evidencia(
     ocorrencia_id: UUID,
-    # O arquivo físico vem aqui (multipart/form-data)
     arquivo: UploadFile = File(...), 
-    # Como não podemos usar JSON junto com arquivo, os outros campos vêm como Form
     tipo_midia: TipoMidia = Form(...), 
     session: Session = Depends(get_session),
     usuario_atual: Usuario = Depends(get_usuario_atual) 
 ):
-    """Aluno anexando mídia na própria ocorrência."""
-    
-    # 1. Validações de Segurança (RBAC) - Sem alterações!
     ocorrencia = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
@@ -315,16 +294,12 @@ def adicionar_evidencia(
     if usuario_atual.tipo_perfil != TipoPerfil.SEGURANCA and ocorrencia.usuario_id != usuario_atual.id:
         raise HTTPException(status_code=403, detail="Acesso negado. Você só pode enviar evidências para as suas próprias ocorrências.")
     
-    # 2. Fazer o upload físico para a nuvem
     try:
-        # Chama a função do seu bucket.py e guarda a Key retornada
         caminho_salvo = fazer_upload_arquivo(arquivo)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao salvar arquivo na nuvem: {str(e)}")
 
-    # 3. Salvar apenas a referência no Banco de Dados
     try:
-        # ATENÇÃO: Verifique se no seu models.py o campo é 'url_anexo' ou 'caminho_arquivo'
         nova_evidencia = Evidencia(
             ocorrencia_id=ocorrencia_id,
             caminho_salvo=caminho_salvo,
@@ -337,10 +312,8 @@ def adicionar_evidencia(
         return nova_evidencia
 
     except Exception as db_error:
-        session.rollback() # Cancela qualquer tentativa no banco
-        deletar_arquivo_bucket(caminho_salvo) # Remove o arquivo do R2
-        
-        # Agora sim, devolve o erro para o usuário
+        session.rollback() 
+        deletar_arquivo_bucket(caminho_salvo) 
         raise HTTPException(
             status_code=500, 
             detail=f"Erro ao salvar no banco. O arquivo foi removido do storage para manter a integridade. Erro: {str(db_error)}"
@@ -353,7 +326,6 @@ def adicionar_atualizacao_linha_do_tempo(
     session: Session = Depends(get_session),
     usuario_atual: Usuario = Depends(get_usuario_atual) 
 ):
-    """Chat / Linha do tempo da ocorrência."""
     ocorrencia = session.get(Ocorrencia, ocorrencia_id)
     if not ocorrencia:
         raise HTTPException(status_code=404, detail="Ocorrência não encontrada")
