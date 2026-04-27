@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   api_principal:
     build: .
@@ -8,6 +6,13 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - .:/app # Mantém o seu campus_seguro.db a salvo no seu notebook
+      - .:/app 
     env_file:
       - .env
+
+  tunnel:
+    container_name: cloudflared-tunnel
+    image: cloudflare/cloudflared:latest
+    restart: always
+    # O comando abaixo cria a ponte entre a internet e seu container
+    command: tunnel --url http://campus_seguro_principal:8000
