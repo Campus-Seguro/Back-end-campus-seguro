@@ -1,7 +1,7 @@
 services:
-  api_principal:
+  campus_seguro:
     build: .
-    container_name: campus_seguro_principal
+    container_name: campus_seguro
     restart: always
     ports:
       - "8000:8000"
@@ -15,4 +15,4 @@ services:
     image: cloudflare/cloudflared:latest
     restart: always
     # O comando abaixo cria a ponte entre a internet e seu container
-    command: tunnel --url http://campus_seguro_principal:8000
+    command: tunnel --url http://campus_seguro:8000
