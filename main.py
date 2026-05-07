@@ -8,6 +8,7 @@ from fastapi import FastAPI, Depends, HTTPException
 import requests
 from sqlmodel import Session, SQLModel, create_engine, or_, select
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from llm_service.open_router_service import extrair_relato
 from models import Ocorrencia, StatusOcorrencia, Usuario, AtualizacaoOcorrencia, Evidencia, TipoPerfil, TipoMidia
 from schemas import (Token, UsuarioCreate, UsuarioResponse, OcorrenciaCreate, OcorrenciaUpdate, EvidenciaCreate, AtualizacaoCreate, RelatoRequest)
 
@@ -221,24 +222,13 @@ def analisar_relato_com_ia(req: RelatoRequest):
     para extrair os dados da denúncia.
     """
     
-    if not URL_LLAMA_API:
-        raise HTTPException(
-            status_code=500, 
-            detail="A variável URL_LLAMA_API não está configurada no servidor."
-        )
-        
-    url_destino = f"{URL_LLAMA_API}/denuncias/preview"
-    
     try:
-        resposta = requests.post(
-            url=url_destino,
-            json={"descricao": req.descricao},
-            timeout=120 # Importante: Limite de 120 segundos para a IA não travar seu backend
-        )
-        
-        resposta.raise_for_status()
-        
-        return resposta.json()
+        dados = extrair_relato(req.descricao)
+
+        return {
+            "descricao_original": req.descricao,
+            "dados_extraidos": dados
+        }
         
     except requests.exceptions.Timeout:
         raise HTTPException(
