@@ -2,6 +2,7 @@ services:
   campus_seguro:
     build: .
     container_name: campus_seguro
+    hostname: campus_seguro
     restart: always
     ports:
       - "8000:8000"
