@@ -1,11 +1,32 @@
+# --- Web Server & Framework ---
+fastapi==0.136.0
+uvicorn==0.44.0
+python-multipart
+starlette==1.0.0
+
+# --- Banco de Dados & Modelagem ---
+sqlmodel
+SQLAlchemy==2.0.49
+pydantic==2.13.2
+pydantic[email]
+
+# --- Segurança & Auth ---
+PyJWT
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# --- IA & NLP (Processamento de Linguagem) ---
+spacy==3.8.14
+pt_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.8.0/pt_core_news_sm-3.8.0-py3-none-any.whl
+numpy>=1.26.4,<2.1.0
+
+# --- Integrações & Cloud ---
+requests==2.33.1
 boto3
 botocore
-fastapi
-pydantic[email]
-PyJWT
-python-dotenv
-sqlmodel
-uvicorn
-multipart
-requests
-python-multipart
+python-dotenv==1.2.2
+
+# --- Utilitários ---
+annotated-types==0.7.0
+anyio==4.13.0
+typing_extensions==4.15.0
