@@ -190,12 +190,15 @@ def acionar_botao_emergencia(
         tipo_incidente=ocorrencia_in.tipo_incidente,
         descricao=ocorrencia_in.descricao,
         localizacao=ocorrencia_in.localizacao,
-        status=StatusOcorrencia.ABERTO
+        status=StatusOcorrencia.ABERTO,
+        
+        descricao_resumida=ocorrencia_in.descricao_resumida or "Acionamento rápido de emergência",
+        horario_ocorrencia=ocorrencia_in.horario_ocorrencia or datetime.utcnow()
     )
     session.add(nova_ocorrencia)
     session.commit()
     session.refresh(nova_ocorrencia)
-    return nova_ocorrencia 
+    return nova_ocorrencia
 
 
 @app.get("/ocorrencias/", response_model=List[Ocorrencia], tags=["Ocorrências"])
